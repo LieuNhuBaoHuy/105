@@ -23,15 +23,15 @@ export class Flashlight {
         this.light.castShadow = true;
         this.light.target = this.target;
 
-        this.light.shadow.mapSize.set(2048, 2048);
+        this.light.shadow.mapSize.set(1024, 1024);
 
-        this.light.shadow.camera.near = 0.25;
+        this.light.shadow.camera.near = 0.1;
         this.light.shadow.camera.far  = 20;
 
-        this.light.shadow.bias       = -0.00005;
-        this.light.shadow.normalBias = 0.03;
+        this.light.shadow.bias       = -0.00002;
+        this.light.shadow.normalBias = 0.004;
 
-        this.light.shadow.radius = 2;
+        this.light.shadow.radius = 0.75;
 
         // TẮT HOÀN TOÀN CONE TẠM THỜI
         // Cone đang gây nhầm hướng.

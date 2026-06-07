@@ -11,17 +11,17 @@ export class DayNightToggle {
         this.sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
         this.sun.position.set(60, 100, 40);
         this.sun.castShadow = true;
-        this.sun.shadow.mapSize.set(4096, 4096);
-        this.sun.shadow.bias = -0.00015;
-        this.sun.shadow.normalBias = 0.035;
-        this.sun.shadow.radius = 1.5;
+        this.sun.shadow.mapSize.set(2048, 2048);
+        this.sun.shadow.bias = -0.00008;
+        this.sun.shadow.normalBias = 0.018;
+        this.sun.shadow.radius = 1.0;
         Object.assign(this.sun.shadow.camera, {
             near: 0.5,
-            far: 300,
-            left: -120,
-            right: 120,
-            top: 120,
-            bottom: -120,
+            far: 220,
+            left: -90,
+            right: 90,
+            top: 90,
+            bottom: -90,
         });
         this.sun.shadow.camera.updateProjectionMatrix();
         this.sun.target.position.set(0, 0, 0);
