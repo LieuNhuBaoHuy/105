@@ -21,76 +21,24 @@ async function loadLevelJson() {
         const level =
             await response.json();
 
-        const affineSaves =
-            level.affine_saves ||
-            Object.fromEntries(
-                Object.entries(level)
-                    .filter(([, value]) => value && value.p && value.r && value.s)
-            );
-
-        const srBoxes =
-            level.sr_boxes ||
-            Object.keys(affineSaves)
-                .filter(id => id.startsWith('srbox_'))
-                .map(id => ({
-                    id,
-                    w: 1.2,
-                    h: 2.0,
-                    d: 1.2
-                }));
-
-        const forceReset =
-            new URLSearchParams(window.location.search).has('resetLevel');
-
-        const hasStoredData = (key) => {
-            const raw = localStorage.getItem(key);
-            if (!raw) return false;
-
-            try {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed)) return parsed.length > 0;
-                if (parsed && typeof parsed === 'object') {
-                    return Object.keys(parsed).length > 0;
-                }
-            } catch (_) {
-                return true;
-            }
-
-            return true;
-        };
-
-        if (
-            affineSaves &&
-            (
-                forceReset ||
-                !hasStoredData('affine_saves')
-            )
-        ) {
+        if (level.affine_saves) {
 
             localStorage.setItem(
                 'affine_saves',
-                JSON.stringify(affineSaves)
+                JSON.stringify(level.affine_saves)
             );
         }
 
-        if (
-            srBoxes.length > 0 &&
-            (
-                forceReset ||
-                !hasStoredData('sr_boxes')
-            )
-        ) {
+        if (level.sr_boxes) {
 
             localStorage.setItem(
                 'sr_boxes',
-                JSON.stringify(srBoxes)
+                JSON.stringify(level.sr_boxes)
             );
         }
 
         console.log(
-            forceReset
-                ? '[Level] Reset localStorage from level.json'
-                : '[Level] Seeded default level from level.json'
+            '[Level] Loaded level.json'
         );
 
     } catch (err) {
@@ -104,13 +52,9 @@ async function loadLevelJson() {
 
 // ─── Renderer ─────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
-renderer.outputColorSpace  = THREE.SRGBColorSpace;
-renderer.toneMapping       = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
 document.body.appendChild(renderer.domElement);
 
 // ─── Scene & Camera ───────────────────────────────────────────────────────
@@ -190,7 +134,6 @@ document.addEventListener('pointerlockchange', () => {
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 

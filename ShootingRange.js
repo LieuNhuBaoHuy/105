@@ -1,13 +1,17 @@
 // ShootingRange.js
 import * as THREE from 'three';
 
+// ─── Key lưu danh sách box trong localStorage ────────────────────────────────
+//     Transform của từng box do AffineEditor tự lưu vào 'affine_saves'
+const LIST_KEY = 'sr_boxes';
+
 // ─── Kích thước mặc định khi spawn box mới ───────────────────────────────────
 const DEFAULT_W = 1.2;
 const DEFAULT_H = 2.0;
 const DEFAULT_D = 1.2;
 
 // ─── Màu sắc vật cản ─────────────────────────────────────────────────────────
-const BOX_COLOR     = 0x7a8fa6;
+const BOX_COLOR    = 0x7a8fa6;
 const BOX_ROUGHNESS = 0.85;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -16,24 +20,20 @@ const BOX_ROUGHNESS = 0.85;
 export class ShootingRange {
     /**
      * @param {THREE.Scene}  scene
-     * @param {object}       affineEditor  - instance AffineEditor
+     * @param {object}       affineEditor  - instance AffineEditor (có loadAll())
      * @param {THREE.Camera} camera        - dùng để spawn box trước mặt
-     * @param {Array}        platforms     - mảng platforms của Collision
-     * @param {object}       levelData     - object level.json dùng chung với AffineEditor
-     * @param {Function}     saveFn        - async (levelData) => boolean
+     * @param {Array}        platforms     - mảng platforms của Collision (thêm vào để va chạm)
      */
-    constructor(scene, affineEditor, camera, platforms, levelData, saveFn) {
-        this._scene     = scene;
-        this._affine    = affineEditor;
-        this._camera    = camera;
-        this._platforms = platforms;
-        this._level     = levelData;
-        this._saveFn    = saveFn;
+    constructor(scene, affineEditor, camera, platforms) {
+        this._scene        = scene;
+        this._affine       = affineEditor;
+        this._camera       = camera;
+        this._platforms    = platforms;
 
         // { id → { mesh, cfg } }
         this._boxes = new Map();
 
-        this._loadFromLevel();
+        this._loadFromStorage();
         this._buildUI();
     }
 
@@ -41,11 +41,12 @@ export class ShootingRange {
     //  PUBLIC
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /** Thêm box mới tại vị trí 2m trước camera, đáy trên mặt sàn */
+    /** Thêm box mới tại vị trí 2m trước camera, ngang tầm mắt → mặt sàn */
     addBox(w = DEFAULT_W, h = DEFAULT_H, d = DEFAULT_D) {
         const id  = 'srbox_' + Date.now();
         const cfg = { id, w, h, d };
 
+        // Spawn ngay trước camera, đặt đáy lên mặt sàn (y = 0)
         const spawnPos = new THREE.Vector3();
         this._camera.getWorldPosition(spawnPos);
         const fwd = new THREE.Vector3();
@@ -53,20 +54,20 @@ export class ShootingRange {
         fwd.y = 0;
         fwd.normalize();
         spawnPos.addScaledVector(fwd, 3);
-        spawnPos.y = h / 2;
+        spawnPos.y = h / 2;   // đáy box nằm tại y = 0
 
         const mesh = this._createMesh(cfg, spawnPos);
 
-        // Cập nhật sr_boxes trong levelData và ghi file
-        this._saveToLevel();
+        // Lưu danh sách → AffineEditor sẽ pick up transform sau
+        this._saveList();
 
-        // Đăng ký với AffineEditor — box mới chưa có saved transform → dùng vị trí spawn
+        // Đăng ký với AffineEditor (loadAll với 1 object, không có saved data → dùng vị trí hiện tại)
         this._affine.loadAll([mesh]);
 
         return mesh;
     }
 
-    /** Xóa box theo id */
+    /** Xóa box theo id — gỡ khỏi scene, collision, AffineEditor, localStorage */
     removeBox(id) {
         const entry = this._boxes.get(id);
         if (!entry) return;
@@ -74,72 +75,43 @@ export class ShootingRange {
         // Gỡ khỏi scene
         this._scene.remove(entry.mesh);
 
-        // Gỡ khỏi platforms (collision)
+        // Gỡ khỏi platforms
         const idx = this._platforms.indexOf(entry.mesh);
         if (idx !== -1) this._platforms.splice(idx, 1);
 
-        // Gỡ transform khỏi affine_saves trong levelData
-        if (this._level.affine_saves) {
-            delete this._level.affine_saves[id];
-        }
+        // Gỡ khỏi affine_saves
+        try {
+            const saves = JSON.parse(localStorage.getItem('affine_saves') || '{}');
+            delete saves[id];
+            localStorage.setItem('affine_saves', JSON.stringify(saves));
+        } catch (_) {}
 
         this._boxes.delete(id);
-
-        // Ghi file
-        this._saveToLevel();
+        this._saveList();
         this._refreshDeleteButtons();
     }
 
-    /** Trả về mảng tất cả mesh */
+    /** Trả về mảng tất cả mesh (dùng để truyền vào affineEditor.loadAll nếu cần) */
     get meshes() {
         return [...this._boxes.values()].map(e => e.mesh);
     }
 
-    /** Gọi từ main.js khi đổi mode */
-    setVisible(v) {
-        this._panel.style.display = v ? 'flex' : 'none';
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
-    //  PRIVATE — load
+    //  PRIVATE — khởi tạo
     // ═══════════════════════════════════════════════════════════════════════════
 
-    _loadFromLevel() {
-        const list = this._getSrBoxList();
+    _loadFromStorage() {
+        let list = [];
+        try {
+            list = JSON.parse(localStorage.getItem(LIST_KEY) || '[]');
+        } catch (_) {}
+
         list.forEach(cfg => {
             const mesh = this._createMesh(cfg);
-            // AffineEditor sẽ tự apply transform từ levelData.affine_saves
+            // loadAll → AffineEditor tự apply transform đã lưu từ 'affine_saves'
             this._affine.loadAll([mesh]);
         });
     }
-
-    /** Lấy mảng sr_boxes từ levelData, tạo nếu chưa có */
-    _getSrBoxList() {
-        if (!Array.isArray(this._level.sr_boxes)) {
-            this._level.sr_boxes = [];
-        }
-        return this._level.sr_boxes;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  PRIVATE — save
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /** Cập nhật sr_boxes trong levelData và ghi file */
-    async _saveToLevel() {
-        this._level.sr_boxes = [...this._boxes.values()].map(e => e.cfg);
-        const ok = await this._saveFn(this._level);
-        if (!ok) {
-            console.error('[ShootingRange] Lưu level.json thất bại!');
-            this._showToast('❌ Lưu thất bại! (server chạy chưa?)');
-        } else {
-            this._showToast('🎯 Đã lưu vào level.json');
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  PRIVATE — mesh
-    // ═══════════════════════════════════════════════════════════════════════════
 
     _createMesh(cfg, initialPos = null) {
         const geo  = new THREE.BoxGeometry(cfg.w, cfg.h, cfg.d);
@@ -152,6 +124,7 @@ export class ShootingRange {
         mesh.castShadow    = true;
         mesh.receiveShadow = true;
 
+        // ── Metadata cho AffineEditor ────────────────────────────────────
         mesh.userData.isTransformable = true;
         mesh.userData.saveId          = cfg.id;
         mesh.name                     = cfg.id;
@@ -159,10 +132,19 @@ export class ShootingRange {
         if (initialPos) mesh.position.copy(initialPos);
 
         this._scene.add(mesh);
-        this._platforms.push(mesh);
+        this._platforms.push(mesh);   // va chạm với player
         this._boxes.set(cfg.id, { mesh, cfg });
 
         return mesh;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  PRIVATE — lưu
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    _saveList() {
+        const list = [...this._boxes.values()].map(e => e.cfg);
+        localStorage.setItem(LIST_KEY, JSON.stringify(list));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -170,6 +152,7 @@ export class ShootingRange {
     // ═══════════════════════════════════════════════════════════════════════════
 
     _buildUI() {
+        // ── Panel chính ──────────────────────────────────────────────────────
         this._panel = document.createElement('div');
         this._panel.style.cssText = `
             position: fixed; bottom: 12px; right: 12px; z-index: 9998;
@@ -180,27 +163,34 @@ export class ShootingRange {
             box-shadow: 0 4px 20px rgba(0,0,0,0.6);
         `;
 
+        // ── Tiêu đề ──────────────────────────────────────────────────────────
         const title = document.createElement('b');
         title.style.color = '#fff';
         title.textContent = '🎯 SHOOTING RANGE';
         this._panel.appendChild(title);
 
+        // ── Nút + Box ────────────────────────────────────────────────────────
         const btnAdd = this._makeBtn('+ Thêm Box', '#1a4a2a', () => {
             this.addBox();
             this._refreshDeleteButtons();
         });
         this._panel.appendChild(btnAdd);
 
+        // ── Divider ──────────────────────────────────────────────────────────
         const hr = document.createElement('hr');
         hr.style.cssText = 'border-color:#333; margin:2px 0';
         this._panel.appendChild(hr);
 
+        // ── Danh sách nút xóa (dynamic) ──────────────────────────────────────
         this._listEl = document.createElement('div');
         this._listEl.style.cssText = 'display:flex; flex-direction:column; gap:4px; max-height:200px; overflow-y:auto;';
         this._panel.appendChild(this._listEl);
         this._refreshDeleteButtons();
 
         document.body.appendChild(this._panel);
+
+        // ── Toggle hiển thị panel theo mode (chỉ hiện ở Tester) ─────────────
+        //    GameScene sẽ gọi shootingRange.setVisible(true/false) khi đổi mode
     }
 
     _refreshDeleteButtons() {
@@ -223,7 +213,7 @@ export class ShootingRange {
             label.title = `${cfg.w}×${cfg.h}×${cfg.d}`;
 
             const btnDel = this._makeBtn('✕', '#4a1a1a', () => this.removeBox(id));
-            btnDel.style.padding  = '2px 7px';
+            btnDel.style.padding = '2px 7px';
             btnDel.style.fontSize = '11px';
 
             row.appendChild(label);
@@ -245,22 +235,8 @@ export class ShootingRange {
         return btn;
     }
 
-    _showToast(msg) {
-        let el = document.getElementById('sr-toast');
-        if (!el) {
-            el = document.createElement('div');
-            el.id = 'sr-toast';
-            el.style.cssText = `
-                position:fixed; bottom:60px; left:50%; transform:translateX(-50%);
-                background:rgba(0,0,0,0.85); color:#fff; padding:8px 20px;
-                border-radius:20px; font-family:monospace; font-size:13px;
-                pointer-events:none; z-index:99999; transition:opacity 0.3s;
-            `;
-            document.body.appendChild(el);
-        }
-        el.textContent = msg;
-        el.style.opacity = '1';
-        clearTimeout(el._t);
-        el._t = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+    /** Gọi từ main.js khi đổi mode: true = tester, false = player */
+    setVisible(v) {
+        this._panel.style.display = v ? 'flex' : 'none';
     }
 }

@@ -7,40 +7,25 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
  * Workflow:
  *   1. Click object  → LOCKED (level 1, xanh lá)
  *   2. Click part    → LOCKED (level 2, vàng)
- *   3a. CONFIRM      → lưu level.json qua server, unlock, deselect
+ *   3a. CONFIRM      → lưu localStorage, unlock, deselect
  *   3b. HỦY BỎ       → revert về trạng thái trước khi kéo, unlock, deselect
  *   3c. Reset gốc    → revert về vị trí hard-code trong file JS (giữ selected)
  *
  * Khi LOCKED: click ra ngoài bị chặn — phải dùng Confirm hoặc Hủy bỏ.
  *
- * Data lưu: level.json (qua POST /save-level) — key "affine_saves"
- *           Format: { saveId: { p, r, s }, ... }
- *
- * Constructor nhận thêm:
- *   levelData    — object level.json đã được main.js load sẵn
- *   saveFn       — async function(levelData) → ghi level.json qua server
+ * Data lưu: localStorage key = 'affine_saves', value = JSON map { saveId → {p,r,s} }
+ * Để xem: DevTools → Application → Local Storage → localhost
+ * Để copy ra ngoài: nút "📋 Export JSON" trong panel
  */
 export class AffineEditor {
-    /**
-     * @param {THREE.Scene}   scene
-     * @param {THREE.Camera}  camera
-     * @param {HTMLElement}   domElement
-     * @param {object}        levelData   — dữ liệu level.json hiện tại (shared với ShootingRange)
-     * @param {Function}      saveFn      — async (levelData) => boolean
-     */
-    constructor(scene, camera, domElement, levelData, saveFn) {
+    constructor(scene, camera, domElement) {
         this.scene      = scene;
         this.camera     = camera;
         this.domElement = domElement;
 
-        // Tham chiếu đến object level.json dùng chung — KHÔNG copy, để ShootingRange
-        // thấy được thay đổi khi ghi và ngược lại.
-        this._level  = levelData;
-        this._saveFn = saveFn;
-
         this.enabled    = false;
         this.isDragging = false;
-        this.isLocked   = false;
+        this.isLocked   = false;   // true khi đang chỉnh → chặn click ra ngoài
 
         this.raycaster = new THREE.Raycaster();
         this.mouse     = new THREE.Vector2();
@@ -56,24 +41,26 @@ export class AffineEditor {
             this.isDragging = e.value;
 
             if (e.value) {
+                // Bắt đầu kéo → chụp snapshot pre-drag
                 const target = this.selectedPart || this.selectedGroup;
                 if (target) this._snapshotPreDrag(target);
             } else {
+                // Thả chuột → cập nhật highlight
                 this._refreshHighlights();
             }
         });
         this.scene.add(this.controls);
 
         // ── Highlight boxes ──────────────────────────────────────────────────
-        this.hlGroup = new THREE.BoxHelper(new THREE.Object3D(), 0x00ff88);
+        this.hlGroup = new THREE.BoxHelper(new THREE.Object3D(), 0x00ff88); // xanh lá
         this.hlGroup.visible = false;
         this.scene.add(this.hlGroup);
 
-        this.hlPart = new THREE.BoxHelper(new THREE.Object3D(), 0xffdd00);
+        this.hlPart = new THREE.BoxHelper(new THREE.Object3D(), 0xffdd00);  // vàng
         this.hlPart.visible = false;
         this.scene.add(this.hlPart);
 
-        this.hlHover = new THREE.BoxHelper(new THREE.Object3D(), 0x00ccff);
+        this.hlHover = new THREE.BoxHelper(new THREE.Object3D(), 0x00ccff); // cyan preview
         this.hlHover.visible = false;
         this.scene.add(this.hlHover);
 
@@ -109,6 +96,7 @@ export class AffineEditor {
 
             <hr style="border-color:#333;margin:2px 0">
 
+            <!-- Lock indicator + Confirm/Cancel -->
             <div id="aff-lock-bar" style="
                 display:none; align-items:center; gap:6px;
                 background:rgba(255,200,0,0.1); border:1px solid #555;
@@ -127,12 +115,13 @@ export class AffineEditor {
             <button id="aff-up" style="${this._bs('#0e2e1a')}">↑ Lên Group &nbsp;<kbd>Esc</kbd></button>
 
             <hr style="border-color:#333;margin:2px 0">
+            <!-- Info + Export -->
             <div style="font-size:10px;color:#555;line-height:1.6">
-                💾 Lưu thẳng vào <b style="color:#777">level.json</b><br>
-                Chuyển zip → máy khác vẫn giữ nguyên
+                💾 Lưu trong <b style="color:#777">localStorage</b> của browser<br>
+                Xem: DevTools → Application → Local Storage
             </div>
-            <button id="aff-save-all" style="${this._bs('#1a2a4a')}; font-size:10px">
-                💾 Lưu tất cả ngay
+            <button id="aff-export" style="${this._bs('#1a2a4a')}; font-size:10px">
+                📋 Copy config JSON
             </button>
 
             <hr style="border-color:#333;margin:2px 0">
@@ -160,14 +149,14 @@ export class AffineEditor {
         this.upBtn        = this.ui.querySelector('#aff-up');
         this.lockBar      = this.ui.querySelector('#aff-lock-bar');
 
-        this.ui.querySelector('#aff-t').onclick        = () => this._setMode('translate');
-        this.ui.querySelector('#aff-r').onclick        = () => this._setMode('rotate');
-        this.ui.querySelector('#aff-s').onclick        = () => this._setMode('scale');
-        this.ui.querySelector('#aff-confirm').onclick  = () => this.confirm();
-        this.ui.querySelector('#aff-cancel').onclick   = () => this.cancelEdit();
-        this.ui.querySelector('#aff-reset').onclick    = () => this.resetToDefault();
-        this.ui.querySelector('#aff-up').onclick       = () => this._goUpToGroup();
-        this.ui.querySelector('#aff-save-all').onclick = () => this._saveAll();
+        this.ui.querySelector('#aff-t').onclick       = () => this._setMode('translate');
+        this.ui.querySelector('#aff-r').onclick       = () => this._setMode('rotate');
+        this.ui.querySelector('#aff-s').onclick       = () => this._setMode('scale');
+        this.ui.querySelector('#aff-confirm').onclick = () => this.confirm();
+        this.ui.querySelector('#aff-cancel').onclick  = () => this.cancelEdit();
+        this.ui.querySelector('#aff-reset').onclick   = () => this.resetToDefault();
+        this.ui.querySelector('#aff-up').onclick      = () => this._goUpToGroup();
+        this.ui.querySelector('#aff-export').onclick  = () => this._exportConfig();
     }
 
     _bs(bg = '#2a2a2a') {
@@ -178,6 +167,7 @@ export class AffineEditor {
 
     _setMode(mode) { this.controls.setMode(mode); this._status(`Mode: ${mode}`); }
 
+    /** Cập nhật bảng thông số Position / Rotation / Scale lên UI */
     _updateParams() {
         if (!this.paramsEl) return;
         const target = this.selectedPart || this.selectedGroup;
@@ -205,7 +195,6 @@ export class AffineEditor {
             `<span style="color:#8f8">Y</span>${n(s.y)} ` +
             `<span style="color:#88f">Z</span>${n(s.z)}`;
     }
-
     _status(msg)   { if (this.statusEl)     this.statusEl.textContent     = msg; }
     _crumb(msg)    { if (this.breadcrumbEl) this.breadcrumbEl.textContent = msg; }
 
@@ -218,6 +207,8 @@ export class AffineEditor {
     // ─────────────────────────────────────────────────────────────────────────
     // Snapshots
     // ─────────────────────────────────────────────────────────────────────────
+
+    /** Chụp trạng thái TRƯỚC KHI drag — dùng cho "Hủy bỏ" */
     _snapshotPreDrag(obj) {
         obj.userData.preDragTransform = {
             p: obj.position.toArray(),
@@ -226,12 +217,14 @@ export class AffineEditor {
         };
     }
 
+    /** Chụp trạng thái ngay lúc select — backup thêm lớp nữa */
     _snapshotPreEdit(obj) {
         obj.userData.preEditTransform = {
             p: obj.position.toArray(),
             r: [obj.rotation.x, obj.rotation.y, obj.rotation.z, obj.rotation.order],
             s: obj.scale.toArray()
         };
+        // pre-drag ban đầu = pre-edit (chưa drag lần nào)
         this._snapshotPreDrag(obj);
     }
 
@@ -257,9 +250,11 @@ export class AffineEditor {
             if (e.button !== 0 || !this.enabled || this.isDragging) return;
 
             if (this.isLocked) {
+                // Khi đang locked: chỉ cho phép drill vào part của group đang chọn
                 if (this.hoveredPart && this.selectedGroup) {
                     this._selectPart(this.hoveredPart);
                 }
+                // Chặn tất cả tương tác khác (click ngoài, group khác)
                 return;
             }
 
@@ -316,6 +311,7 @@ export class AffineEditor {
 
     _goUpToGroup() {
         if (!this.selectedGroup) return;
+        // Nếu part đang dirty (chưa confirm), snapshot group lại
         this._snapshotPreEdit(this.selectedGroup);
         this.selectedPart = null;
         this.controls.attach(this.selectedGroup);
@@ -354,36 +350,12 @@ export class AffineEditor {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Level data helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /** Đọc affine_saves từ levelData (phần của AffineEditor) */
-    _getAffineSaves() {
-        if (!this._level.affine_saves) this._level.affine_saves = {};
-        return this._level.affine_saves;
-    }
-
-    /**
-     * Ghi toàn bộ levelData (bao gồm affine_saves đã sửa) vào level.json.
-     * Hiển thị toast kết quả.
-     */
-    async _persistLevel(toastSuccess, toastFail) {
-        const ok = await this._saveFn(this._level);
-        if (ok) {
-            this._showToast(toastSuccess || '✔ Đã lưu level.json');
-        } else {
-            this._showToast(toastFail   || '❌ Lưu thất bại! (server chạy chưa?)');
-        }
-        return ok;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     // Public actions
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * CONFIRM — lưu transform hiện tại vào level.json (qua server), unlock, deselect.
-     * Lần sau mở lại (bất kỳ máy nào) sẽ load đúng vị trí này.
+     * CONFIRM — lưu transform hiện tại vào localStorage, unlock, deselect.
+     * Lần sau mở lại browser sẽ load lại đúng vị trí này.
      */
     confirm() {
         const target = this.selectedPart || this.selectedGroup;
@@ -392,24 +364,27 @@ export class AffineEditor {
         const id = target.userData.saveId;
         if (!id) { this._status('⚠ Object thiếu saveId'); return; }
 
-        const saves = this._getAffineSaves();
+        const saves = JSON.parse(localStorage.getItem('affine_saves') || '{}');
         saves[id] = {
             p: target.position.toArray(),
             r: [target.rotation.x, target.rotation.y, target.rotation.z, target.rotation.order],
             s: target.scale.toArray()
         };
+        localStorage.setItem('affine_saves', JSON.stringify(saves));
+        console.log('[AffineEditor] confirmed & saved:', id, saves[id]);
 
-        console.log('[AffineEditor] confirmed & saving:', id, saves[id]);
         this._deselect();
-        this._persistLevel(`✔ Đã lưu "${id}"`, `❌ Lưu "${id}" thất bại!`);
+        this._showToast(`✔ Đã lưu "${id}"`);
     }
 
     /**
      * HỦY BỎ — hoàn tác về trạng thái trước khi kéo lần cuối, unlock, deselect.
+     * Nếu chưa kéo lần nào thì hoàn tác về lúc mới click chọn object.
      */
     cancelEdit() {
         const target = this.selectedPart || this.selectedGroup;
         if (target) {
+            // Ưu tiên revert về pre-drag; nếu chưa drag thì về pre-edit
             const snap = target.userData.preDragTransform || target.userData.preEditTransform;
             if (snap) {
                 target.position.fromArray(snap.p);
@@ -422,21 +397,24 @@ export class AffineEditor {
     }
 
     /**
-     * RESET VỀ GỐC — revert về vị trí hard-code trong file JS.
-     * Xoá luôn entry trong level.json.
+     * RESET VỀ GỐC — revert về vị trí hard-code trong file JS
+     * (snapshot lúc gọi loadAll, TRƯỚC khi load localStorage).
+     * Xoá luôn entry trong localStorage để lần sau không load lại.
+     * Giữ nguyên trạng thái selected (không deselect).
      */
     resetToDefault() {
         const target = this.selectedPart || this.selectedGroup;
         if (!target) { this._status('⚠ Chưa chọn object!'); return; }
 
-        const id  = target.userData.saveId;
+        const id = target.userData.saveId;
         const def = target.userData.defaultTransform;
         if (!def) { this._status('⚠ Không có snapshot gốc'); return; }
 
-        // Xoá khỏi levelData
+        // Xoá khỏi localStorage
         if (id) {
-            const saves = this._getAffineSaves();
+            const saves = JSON.parse(localStorage.getItem('affine_saves') || '{}');
             delete saves[id];
+            localStorage.setItem('affine_saves', JSON.stringify(saves));
         }
 
         // Áp dụng transform gốc
@@ -444,34 +422,60 @@ export class AffineEditor {
         target.rotation.set(def.r[0], def.r[1], def.r[2], def.r[3]);
         target.scale.fromArray(def.s);
 
+        // Cập nhật snapshot để Hủy bỏ cũng về đây
         this._snapshotPreEdit(target);
+
         this._refreshHighlights();
         this._status(`↺ Đã reset "${id || '?'}" về code gốc`);
-
-        this._persistLevel(`↺ Reset "${id}" + lưu OK`, `❌ Lưu thất bại!`);
     }
 
     /**
-     * LƯU TẤT CẢ — ghi toàn bộ levelData hiện tại vào file ngay lập tức.
-     * Dùng khi muốn đảm bảo file đã up-to-date trước khi zip gửi đi.
+     * EXPORT CONFIG — copy toàn bộ JSON đã lưu vào clipboard.
+     * Dán vào file text để xem hoặc backup.
      */
-    async _saveAll() {
-        this._status('Đang lưu...');
-        const ok = await this._saveFn(this._level);
-        if (ok) {
-            this._showToast('💾 Đã lưu toàn bộ level.json!');
-            this._status('Lưu thành công');
-        } else {
-            this._showToast('❌ Lưu thất bại! Server có đang chạy không?');
-            this._status('Lưu thất bại');
-        }
+    _exportConfig() {
+
+        const affineSaves =
+            JSON.parse(
+                localStorage.getItem('affine_saves') || '{}'
+            );
+
+        const srBoxes =
+            JSON.parse(
+                localStorage.getItem('sr_boxes') || '[]'
+            );
+
+        const exportData = {
+            affine_saves: affineSaves,
+            sr_boxes: srBoxes
+        };
+
+        const pretty =
+            JSON.stringify(exportData, null, 2);
+
+        navigator.clipboard.writeText(pretty)
+            .then(() => {
+
+                this._showToast(
+                    '📋 Đã copy LEVEL JSON!'
+                );
+
+            })
+            .catch(() => {
+
+                prompt(
+                    'Copy JSON này:',
+                    pretty
+                );
+
+            });
     }
 
     toggle(state) {
         this.enabled = state;
         this.ui.style.display = state ? 'flex' : 'none';
         if (!state) {
-            if (this.isLocked) this.cancelEdit();
+            if (this.isLocked) this.cancelEdit(); // tự hủy nếu đang lock
             this.hlHover.visible = false;
             this.domElement.style.cursor = 'default';
         } else {
@@ -481,21 +485,22 @@ export class AffineEditor {
     }
 
     /**
-     * Tải transform đã lưu từ level.json (affine_saves), áp dụng cho danh sách objects.
+     * Tải transform đã lưu từ localStorage, áp dụng cho danh sách objects.
+     * Tự động traverse xuống children có isPart = true.
      * Gọi một lần sau khi scene dựng xong (trong main.js).
      */
     loadAll(objects) {
-        const saves  = this._getAffineSaves();
+        const saves = JSON.parse(localStorage.getItem('affine_saves') || '{}');
         const visited = new Set();
 
-        const applyTransform = (obj) => {
+        const applySavedTransform = (obj) => {
             if (visited.has(obj)) return;
             visited.add(obj);
 
             const id = obj.userData.saveId;
             if (!id) return;
 
-            // Chụp default (hard-coded) trước khi apply saved data
+            // Snapshot before applying saved data. This is the hard-coded default transform.
             obj.userData.defaultTransform = {
                 p: obj.position.toArray(),
                 r: [obj.rotation.x, obj.rotation.y, obj.rotation.z, obj.rotation.order],
@@ -507,19 +512,20 @@ export class AffineEditor {
                 obj.position.fromArray(c.p);
                 obj.rotation.set(c.r[0], c.r[1], c.r[2], c.r[3]);
                 obj.scale.fromArray(c.s);
-                console.log('[AffineEditor] loaded from level.json:', id);
+                console.log('[AffineEditor] loaded:', id);
             }
         };
 
         objects.forEach(root => {
-            root.traverse(obj => applyTransform(obj));
+            root.traverse(obj => applySavedTransform(obj));
         });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Update loop
+    // Update loop — gọi mỗi frame
     // ─────────────────────────────────────────────────────────────────────────
     update() {
+        // Cập nhật thông số real-time kể cả khi đang drag
         if (this.enabled) this._updateParams();
         if (!this.enabled || this.isDragging) return;
 
@@ -530,18 +536,22 @@ export class AffineEditor {
         this.hoveredPart  = null;
 
         for (const hit of hits) {
+            // Tìm part bên trong group đang chọn (level 1 → 2)
             if (this.selectedGroup && !this.hoveredPart) {
                 let anc = hit.object;
                 while (anc && anc !== this.scene) {
+                    // SỬA TẠI ĐÂY: Thay vì check hit.object, ta check anc (node cha)
                     if (anc.userData.isPart) {
+                        // Kiểm tra xem part này có thuộc group đang chọn không
                         let isInsideSelected = false;
                         let temp = anc;
-                        while (temp) {
+                        while(temp) {
                             if (temp === this.selectedGroup) { isInsideSelected = true; break; }
                             temp = temp.parent;
                         }
+                        
                         if (isInsideSelected) {
-                            this.hoveredPart = anc;
+                            this.hoveredPart = anc; // Nhận diện Group USPS là 1 Part
                             break;
                         }
                     }
@@ -549,6 +559,7 @@ export class AffineEditor {
                 }
             }
 
+            // Tìm transformable group gần nhất
             if (!this.hoveredGroup) {
                 let obj = hit.object;
                 while (obj && obj.parent) {
@@ -560,6 +571,7 @@ export class AffineEditor {
             if (this.hoveredPart && this.hoveredGroup) break;
         }
 
+        // Hover highlight (cyan) — chỉ hiện khi chưa chọn hoặc hover part mới
         const hoverTarget = this.hoveredPart ?? this.hoveredGroup;
         if (hoverTarget && hoverTarget !== this.selectedGroup && hoverTarget !== this.selectedPart) {
             this.hlHover.setFromObject(hoverTarget);
@@ -568,6 +580,7 @@ export class AffineEditor {
             this.hlHover.visible = false;
         }
 
+        // Cursor
         const canInteract = hoverTarget && (!this.isLocked || this.hoveredPart);
         this.domElement.style.cursor = canInteract ? 'pointer' : 'default';
 
